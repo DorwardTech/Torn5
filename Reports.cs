@@ -5,6 +5,11 @@ using System.Drawing;
 using System.Linq;
 using System.Text;
 using Zoom;
+using System.IO;
+using Newtonsoft.Json.Linq;
+using System.Text.Json;
+using Newtonsoft.Json;
+using Torn5;
 
 namespace Torn.Report
 {
@@ -71,14 +76,18 @@ namespace Torn.Report
 	{
 		public LeagueTeam Team { get; set; }
 		public double Score { get; set; } // Scores and ScoreList entries can be actual scores, or score ratios, as needed.
+		public double ZeroedScore { get; set; } // Scores and ScoreList entries can be actual scores, or score ratios, as needed.
 		public double Points { get; set; }
 		public List<double> ScoreList { get; set; }
+		public List<double> ZeroedScoreList { get; set; }
 		public int Dropped { get; set; }  // Number of scores dropped. Maintained by caller.
 
 		public TeamLadderEntry()
 		{
 			ScoreList = new List<double>();
+			ZeroedScoreList = new List<double>();
 			Score = 0;
+			ZeroedScore = 0;
 			Points = 0;
 			Dropped = 0;
 		}
@@ -89,6 +98,9 @@ namespace Torn.Report
 
 			if (result == 0)
 				result = entry.Score - Score;
+
+			if (result == 0)
+				result = entry.ZeroedScore - ZeroedScore;
 
 			return Math.Sign(result);
 		}
@@ -113,6 +125,9 @@ namespace Torn.Report
 
 			if (result == 0)
 				result = entry2.Score - entry1.Score;
+
+			if (result == 0)
+				result = entry2.ZeroedScore - entry1.ZeroedScore;
 
 			return Math.Sign(result);
 		}
@@ -898,6 +913,7 @@ namespace Torn.Report
 		public static ZoomReport DetailedGamesList(League league, bool includeSecret, ReportTemplate rt)
 		{
 			bool hasHits = rt.FindSetting("showHits") >= 0;
+			bool showZeroed = rt.FindSetting("showZeroed") >= 0;
 			ZoomReport report = new ZoomReport("", "Game", "right")
 			{
 				MultiColumnOK = true
@@ -939,6 +955,12 @@ namespace Torn.Report
 					teamsRow.Add(scoreCell);
 					teamCell.ChartCell = scoreCell;
 					scoreCell.ChartCell = scoreCell;
+					if (showZeroed)
+					{
+						ZCell zeroedCell = new ZCell(gameTeam.GetZeroedScore(), ChartType.Bar, "N0", gameTeam.Colour.ToColor());
+						teamsRow.Add(zeroedCell);
+						zeroedCell.ChartCell = zeroedCell;
+					}
 					if (hasHits)
 					{
 						ZCell hitsCell = new ZCell(gameTeam.GetHitsBy(), ChartType.Bar, "N0", gameTeam.Colour.ToColor());
@@ -982,6 +1004,11 @@ namespace Torn.Report
 								scoreCell.Border = Color.Black;
 
 							playersRow.Add(scoreCell);
+							if (showZeroed)
+							{
+								ZCell zeroedCell = new ZCell(player.GetZeroedScore(), ChartType.Bar, "N0", gameTeam.Colour.ToColor());
+								playersRow.Add(zeroedCell);
+							}
 							if (hasHits)
 							{
 								ZCell hitsCell = new ZCell(player.HitsBy, ChartType.Bar, "N0", gameTeam.Colour.ToColor());
@@ -994,6 +1021,8 @@ namespace Torn.Report
 							playersRow.Add(new ZCell("", gameTeam.Colour.ToColor()));
 							playersRow.Add(new ZCell("", gameTeam.Colour.ToColor()));
 							if (hasHits)
+								playersRow.Add(new ZCell("", gameTeam.Colour.ToColor()));
+							if (showZeroed)
 								playersRow.Add(new ZCell("", gameTeam.Colour.ToColor()));
 						}
 					}
@@ -1039,6 +1068,8 @@ namespace Torn.Report
 				report.AddColumn(new ZColumn("Score", ZAlignment.Right));
 				if (hasHits)
 					report.AddColumn(new ZColumn("Hits", ZAlignment.Right));
+				if (showZeroed)
+					report.AddColumn(new ZColumn("Non-Zeroed", ZAlignment.Right));
 				if (league.IsPoints())  // there are victory points for this league
 					report.AddColumn(new ZColumn("Pts", ZAlignment.Right));
 				else
@@ -2204,16 +2235,114 @@ namespace Torn.Report
 			return report;
 		}
 
+		public static ZoomReport PackHitsReport(League league, bool includeSecret, ReportTemplate rt, string exportFolder)
+        {
+			ZoomReport report = new ZoomReport(ReportTitle("Pack Hits", league.Title, rt),
+											   "Pack,Chest,Back,Phasor,L Shoulder,R Shoulder,Total Hits",
+											   "left,right,right,right,right,right,integer");
+
+			if (exportFolder == "" || exportFolder == null)
+            {
+				Console.WriteLine("Cannot find json exports");
+				return report;
+            }
+
+			string jsonPath = Path.Combine(exportFolder, "json");
+
+			var files = from file in Directory.EnumerateFiles(jsonPath) select file;
+
+			List<PackHits> packs = new List<PackHits>();
+
+			foreach (var file in files)
+            {
+				string jsonLines = File.ReadAllText(file);
+				JObject json = new JObject(); ;
+				JArray loggedEvents = new JArray();
+				JArray players = new JArray();
+
+				try
+				{
+					json = JsonConvert.DeserializeObject<JObject>(jsonLines);
+					loggedEvents = json.Value<JArray>("Events");
+					players = json.Value<JArray>("Players");
+				}
+				catch (Newtonsoft.Json.JsonException)
+				{
+					Console.WriteLine("JSON file at path ({0}) does not contain JSON data, event data ignored", file);
+				}
+
+				foreach (JObject evnt in loggedEvents)
+				{
+					var eventNum = Int32.Parse(evnt["Event_Type"].ToString());
+					var serverPlayerId = evnt["ServerPlayerId"].ToString();
+					JObject player = players.Children<JObject>().FirstOrDefault(p => p["ServerPlayerId"] != null && p["ServerPlayerId"].ToString() == serverPlayerId);
+					string packName = player["Pack"].ToString();
+					int packIndex = packs.FindIndex(p => p.name == packName);
+					if (packIndex == -1)
+					{
+						packIndex = packs.Count();
+						packs.Add(new PackHits(packName));
+					}
+					switch (eventNum)
+					{
+						case 14:
+						case 21:
+							packs[packIndex].phasor++;
+							break;
+						case 15:
+						case 22:
+							packs[packIndex].chest++;
+							break;
+						case 16:
+						case 23:
+							packs[packIndex].flShoulder++;
+							break;
+						case 17:
+						case 24:
+							packs[packIndex].frShoulder++;
+							break;
+						case 20:
+						case 27:
+							packs[packIndex].back++;
+							break;
+					}
+				}
+			}
+
+			foreach(PackHits pack in packs)
+            {
+				Console.WriteLine(pack.name);
+				ZRow row = report.AddRow(new ZRow());
+
+				decimal chest = Math.Round(pack.chest / pack.TotalHits() * 100,2);
+				decimal back = Math.Round(pack.back / pack.TotalHits() * 100,2);
+				decimal phasor = Math.Round(pack.phasor / pack.TotalHits() * 100,2);
+				decimal flShoulder = Math.Round(pack.flShoulder / pack.TotalHits() * 100,2);
+				decimal frShoulder = Math.Round(pack.frShoulder / pack.TotalHits() * 100,2);
+
+				row.AddCell(new ZCell(pack.name));
+				row.AddCell(new ZCell(chest + "%"));
+				row.AddCell(new ZCell(back + "%"));
+				row.AddCell(new ZCell(phasor + "%"));
+				row.AddCell(new ZCell(flShoulder + "%"));
+				row.AddCell(new ZCell(frShoulder + "%"));
+				row.AddCell(new ZCell((int)pack.TotalHits()));
+			}
+
+			return report;
+        }
+
 		/// <summary>List each player and their number of games, average score, tag ratio, etc.</summary>
 		public static ZoomReport SoloLadder(League league, bool includeSecret, ReportTemplate rt)
 		{
 			bool isDecimal = rt.FindSetting("isDecimal") >= 0;
+			bool showZeroed = rt.FindSetting("showZeroed") >= 0;
 			ChartType chartType = ChartTypeExtensions.ToChartType(rt.Setting("ChartType"));
 
 			ZoomReport report = new ZoomReport(ReportTitle("Solo Ladder", league.Title, rt),
-											   "Rank,Player,Team,Average Score,TR\u00D7SR,Tag Ratio,Score Ratio,Tags +,Tags-,Average Rank,Destroys,Denies,Denied,Yellow,Red,Games,Dropped,Grade,Comments,Longitudinal",
-											   "center,left,left,integer,integer,integer,integer,float,float,float,integer,integer,integer,integer,integer,integer,integer,integer",
-											   ",,,,Ratios,Ratios,Ratios,Tags,Tags,,Base,Base,Base,Penalties,Penalties,,,")
+											   "Rank,Player,Team,Average Score," + (showZeroed ? "Average Non-Zeroed Score," : "") + "TR\u00D7SR,Tag Ratio,Score Ratio,Tags +,Tags-,Average Rank,Destroys,Denies,Denied,Yellow,Red,Elimed,Games,Dropped,Grade,Comments,Longitudinal",
+											   "center,left,left,integer," + (showZeroed ? "integer," : "") + "integer,integer,integer,float,float,float,integer,integer,integer,integer,integer,integer,integer,integer,integer",
+											   ",,," + (showZeroed ? "," : "") + ",Ratios,Ratios,Ratios,Tags,Tags,,Base,Base,Base,Penalties,Penalties,,,,")
 			{
 				MaxChartByColumn = true,
 				MultiColumnOK = true
@@ -2230,11 +2359,14 @@ namespace Torn.Report
 			bool showGrades = rt.FindSetting("ShowGrades") >= 0;
 			bool showComments = rt.FindSetting("ShowComments") >= 0;
 
-			if(showGrades)
+			if (showGrades)
 				report.AddColumn(new ZColumn("Grade"));
 
 			if (showComments)
 				report.AddColumn(new ZColumn("Comment"));
+
+			if (showZeroed)
+				report.AddColumn(new ZColumn("ZeroedScore"));
 
 			var playerTeams = league.BuildPlayerTeamList();
 			foreach (var pt in playerTeams)
@@ -2256,6 +2388,8 @@ namespace Torn.Report
 					var played = League.Played(games, player, includeSecret);
 
 					row.Add(DataCell(played.Select(x => (double)x.Score).ToList(), rt.Drops, chartType, isDecimal ? "N1" : "N0"));  // Av score
+					if(showZeroed)
+						row.Add(DataCell(played.Select(x => (double)x.GetZeroedScore()).ToList(), rt.Drops, chartType, isDecimal ? "N1" : "N0"));  // Av score
 
 					List<double> scoreRatios = new List<double>();
 					List<double> srxTrs = new List<double>();
@@ -2307,6 +2441,7 @@ namespace Torn.Report
 					row.Add(DataCell(played.Select(x => (double)x.BaseDenied).ToList(), rt.Drops, ChartType.Bar, "N1"));
 					row.Add(DataCell(played.Select(x => (double)x.YellowCards).ToList(), rt.Drops, ChartType.Bar, "N1"));
 					row.Add(DataCell(played.Select(x => (double)x.RedCards).ToList(), rt.Drops, ChartType.Bar, "N1"));
+					row.Add(TotalDataCell(played.Select(x => (double)(x.IsEliminated ? 1 : 0)).ToList(), rt.Drops, ChartType.Bar, "N0"));
 
 					row.Add(new ZCell(played.Count(), ChartType.None, "N0"));  // Games
 
@@ -2381,6 +2516,7 @@ namespace Torn.Report
 		public static ZoomReport TeamLadder(League league, bool includeSecret, ReportTemplate rt)
 		{
 			bool isDecimal = rt.FindSetting("isDecimal") >= 0;
+			bool showZeroed = rt.FindSetting("showZeroed") >= 0;
 			ChartType chartType = ChartTypeExtensions.ToChartType(rt.Setting("ChartType"));
 			bool ratio = false;
 			bool scaled = rt.FindSetting("OrderBy") > 0 && rt.Setting("OrderBy").StartsWith("scaled");
@@ -2423,6 +2559,8 @@ namespace Torn.Report
 			double victoryPointsRange = games.Max(g => g.Teams.Max(t => t.Points)) - victoryPointsMin;
 
 			report.AddColumn(new ZColumn(ratio ? "Score Ratio" : "Average score", ZAlignment.Float));
+			if(showZeroed)
+				report.AddColumn(new ZColumn("Average Non-Zeroed score", ZAlignment.Float));
 			report.AddColumn(new ZColumn("Games", ZAlignment.Integer));
 
 			if (rt.Drops != null && rt.Drops.HasDrops())
@@ -2504,6 +2642,25 @@ namespace Torn.Report
 						scoreCell.Data.AddRange(entry.ScoreList);  // average game score
 				}
 				row.Add(scoreCell);     // average game scores
+
+				if (showZeroed)
+				{
+					ZCell zeroScoreCell;
+					if (entry.ZeroedScoreList.Count == 0)
+						zeroScoreCell = new ZCell("-");     // average game scores
+					else
+					{
+						//scoreCell = DataCell(scoreList, rt.Drops, chartType, "N0");
+						zeroScoreCell = new ZCell(0, chartType)
+						{
+							Number = entry.ZeroedScoreList.Average(),
+							NumberFormat = ratio ? "P1" : isDecimal ? "N1" : "N0"
+						};
+						zeroScoreCell.Data.AddRange(entry.ScoreList);  // average game score
+					}
+					row.Add(zeroScoreCell);     // average game scores
+				}
+
 				if (!league.IsPoints())
 					barCell = scoreCell;
 
@@ -3150,6 +3307,17 @@ Tiny numbers at the bottom of the bottom row show the minimum, bin size, and max
 			return dataCell;
 		}
 
+		static ZCell TotalDataCell(List<double> dataList, Drops drops, ChartType chartType, string numberFormat)
+		{
+			var dataCell = new ZCell(0, chartType, numberFormat);
+			dataCell.Data.AddRange(dataList);
+			if (drops != null)
+				DropScores(dataList, drops);
+			dataCell.Number = dataList.Where(x => !double.IsNaN(x)).DefaultIfEmpty(0).Sum();
+
+			return dataCell;
+		}
+
 		static ZCell TeamCell(LeagueTeam leagueTeam, Color color = default)
 		{
 			if (leagueTeam == null)
@@ -3241,13 +3409,16 @@ Tiny numbers at the bottom of the bottom row show the minimum, bin size, and max
 						else if (game.TotalScore() != 0)
 							entry.ScoreList.Add(gameTeam.Score / game.TotalScore() * game.Teams.Count);
 
-						if(!ignorePoints) entry.Points += gameTeam.Points;
+						entry.ZeroedScoreList.Add(gameTeam.GetZeroedScore());
+
+						if (!ignorePoints) entry.Points += gameTeam.Points;
 					}
 
 					if (entry.ScoreList.Count > 0)
 					{
 						entry.Dropped = DropScores(entry.ScoreList, rt.Drops);
 						entry.Score = entry.ScoreList.Average();
+						entry.ZeroedScore = entry.ZeroedScoreList.Average();
 					}
 
 					ladder.Add(entry);

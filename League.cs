@@ -333,6 +333,9 @@ namespace Torn
 		public double Score { get; set; }
 		/// <summary>Game score adjustment</summary>
 		public double Adjustment { get; set; }
+
+		public List<TermRecord> TermRecords { get; set; }
+
 		/// <summary>Victory points</summary>
 		public double Points { get; set; }
 		/// <summary>Victory points adjustment</summary>
@@ -346,6 +349,33 @@ namespace Torn
 			players = new List<GamePlayer>();
 		}
 
+		public void AddTermRecord(TermRecord termRecord)
+		{
+			if (TermRecords == null)
+			{
+				TermRecords = new List<TermRecord>();
+			}
+			TermRecords.Add(termRecord);
+		}
+
+		public double GetZeroedScore()
+        {
+			double score = 0;
+			foreach(GamePlayer player in players)
+            {
+				Console.WriteLine(player.PlayerId + " " + player.ZeroedScore + " " + player.Score);
+				if(player.ZeroedScore != null && player.ZeroedScore != 0)
+                {
+					score += (double)player.ZeroedScore;
+                } else
+                {
+					score += player.Score;
+                }
+				Console.WriteLine(score);
+            }
+			return score;
+        }
+
 		public GameTeam Clone()
 		{
 			return new GameTeam
@@ -356,7 +386,8 @@ namespace Torn
 				Score = Score,
 				Adjustment = Adjustment,
 				Points = Points,
-				PointsAdjustment = PointsAdjustment
+				PointsAdjustment = PointsAdjustment,
+				TermRecords = TermRecords
 			};
 			// Don't clone players as this will be done by LinkThings().
 		}
@@ -437,6 +468,7 @@ namespace Torn
 		public string Grade { get; set; }
 		public string Pack { get; set; }
 		public double Score { get; set; }
+		public double? ZeroedScore { get; set; }
 		public uint Rank { get; set; }
 		public Colour Colour { get; set; }
 		public int HitsBy { get; set; }
@@ -451,6 +483,28 @@ namespace Torn
 
 		public bool IsEliminated { get; set; }
 
+		public double GetZeroedScore()
+        {
+			if(ZeroedScore != null && ZeroedScore != 0)
+            {
+				return (double)ZeroedScore;
+            } 
+			return Score;
+        }
+
+		public void SetIsEliminated(bool isElimed)
+        {
+			if(isElimed)
+            {
+				IsEliminated = true;
+				ZeroedScore = ZeroedScore == null ? Score : ZeroedScore;
+            } else
+            {
+				IsEliminated = false;
+				ZeroedScore = null;
+            }
+        }
+
 		public void AddTermRecord(TermRecord termRecord)
         {
 			if(TermRecords == null)
@@ -464,6 +518,7 @@ namespace Torn
 		public void Add(GamePlayer source)
 		{
 			Score += source.Score;
+			ZeroedScore += source.ZeroedScore;
 			Rank += source.Rank;
 			HitsBy += source.HitsBy;
 			HitsOn += source.HitsOn;
@@ -488,6 +543,7 @@ namespace Torn
 			target.Grade = Grade;
 			target.Pack = Pack;
 			target.Score = Score;
+			target.ZeroedScore = ZeroedScore;
 			target.Rank = Rank;
 			target.Colour = Colour;
 			target.HitsBy = HitsBy;
@@ -510,6 +566,7 @@ namespace Torn
 			if (divisor == 0) return;
 
 			Score /= divisor;
+			ZeroedScore /= divisor;
 			Rank /= (uint)divisor;
 			HitsBy /= divisor;
 			HitsOn /= divisor;
@@ -537,7 +594,7 @@ namespace Torn
 		}
 		public string GetFormattedAlias(string alias)
 		{
-			return (IsEliminated ? "💀  " : "") + (RedCards > 0 ? (RedCards + "R ") : "") + (YellowCards > 0 ? (YellowCards + "Y ") : "") + alias;
+			return (IsEliminated ? "💀 " : "") + (RedCards > 0 ? (RedCards + "R ") : "") + (YellowCards > 0 ? (YellowCards + "Y ") : "") + alias + (IsEliminated ? ("(" + ZeroedScore + ")") : "");
 		}
 	}
 
@@ -771,8 +828,10 @@ namespace Torn
 		public Collection<double> VictoryPoints { get { return victoryPoints; } }
 
 		public bool HitsTieBreak { get; set; }
+		public bool ZeroedTieBreak { get; set; }
 		public bool ZeroElimed { get; set; }
 		public bool ZeroVps { get; set; }
+		public bool HalfVps { get; set; }
 
 		public double VictoryPointsHighScore { get; set; }
 		public int SweepBonus { get; set; }
@@ -1290,8 +1349,10 @@ namespace Torn
 			RedTermValue = root.GetString("RedTermValue") == null ? DEFAULT_RED_TERM : root.GetDecimal("RedTermValue");
 			IsAutoHandicap = root.GetInt("AutoHandicap") > 0;
 			HitsTieBreak = root.GetInt("HitsTieBreak") > 0;
+			ZeroedTieBreak = root.GetInt("ZeroedTieBreak") > 0;
 			ZeroElimed = root.GetInt("ZeroElimed") > 0;
 			ZeroVps = root.GetInt("ZeroVps") > 0;
+			HalfVps = root.GetInt("HalfVps") > 0;
 			SweepBonus = root.GetInt("SweepBonus");
 
 			ExpectedTeamSize = teamSize == 0 ? 5 : teamSize;
@@ -1420,6 +1481,24 @@ namespace Torn
 						PointsAdjustment = xteam.GetDouble("victorypointsadjustment")
 					};
 
+					if (xteam.SelectSingleNode("terms") != null)
+					{
+						XmlNodeList xterms = xteam.SelectSingleNode("terms").SelectNodes("term");
+
+						foreach (XmlNode xterm in xterms)
+						{
+							TermType termType;
+							TermType.TryParse(xterm.GetString("type"), out termType);
+							string reason = xterm.SelectSingleNode("reason") != null ? xterm.GetString("reason") : "";
+							string time = xterm.SelectSingleNode("time") != null ? xterm.GetString("time") : "";
+							TermRecord termRecord = time == "" ?
+								termRecord = new TermRecord(termType, xterm.GetInt("value"), reason) :
+								termRecord = new TermRecord(termType, DateTime.Parse(time), xterm.GetInt("value"), reason);
+
+							gameTeam.AddTermRecord(termRecord);
+						}
+					}
+
 					game.Teams.Add(gameTeam);
 				}
 				game.Teams.Sort();
@@ -1436,6 +1515,7 @@ namespace Torn
 						Pack = xplayer.GetString("pack"),
 						Grade = xplayer.GetString("grade"),
 						Score = xplayer.GetInt("score"),
+						ZeroedScore = xplayer.GetInt("zeroedScore"),
 						Rank = (uint)xplayer.GetInt("rank"),
 						HitsBy = xplayer.GetInt("hitsby"),
 						HitsOn = xplayer.GetInt("hitson"),
@@ -1537,12 +1617,14 @@ namespace Torn
 			doc.AppendNode(bodyNode, "ExtraAPenalty", ExtraAPenalty.ToString());
 			doc.AppendNode(bodyNode, "ExtraGBonus", ExtraGBonus.ToString());
 			doc.AppendNode(bodyNode, "HitsTieBreak", HitsTieBreak ? 1 : 0);
+			doc.AppendNode(bodyNode, "ZeroedTieBreak", ZeroedTieBreak ? 1 : 0);
 			doc.AppendNode(bodyNode, "Key", Key);
 			doc.AppendNode(bodyNode, "VerbalTermValue", VerbalTermValue.ToString());
 			doc.AppendNode(bodyNode, "YellowTermValue", YellowTermValue.ToString());
 			doc.AppendNode(bodyNode, "RedTermValue", RedTermValue.ToString());
 			doc.AppendNode(bodyNode, "ZeroElimed", ZeroElimed ? 1 : 0);
 			doc.AppendNode(bodyNode, "ZeroVps", ZeroVps ? 1 : 0);
+			doc.AppendNode(bodyNode, "HalfVps", HalfVps ? 1 : 0);
 			doc.AppendNode(bodyNode, "SweepBonus", SweepBonus);
 
 
@@ -1642,6 +1724,24 @@ namespace Torn
 					doc.AppendNonZero(teamNode, "points", team.Points);
 					doc.AppendNonZero(teamNode, "adjustment", team.Adjustment);
 					doc.AppendNonZero(teamNode, "victorypointsadjustment", team.PointsAdjustment);
+
+					if (team.TermRecords != null)
+					{
+						XmlNode termsNode = doc.CreateElement("terms");
+						teamNode.AppendChild(termsNode);
+
+						foreach (TermRecord termRecord in team.TermRecords)
+						{
+							XmlNode termNode = doc.CreateElement("term");
+							termsNode.AppendChild(termNode);
+
+							doc.AppendNode(termNode, "type", termRecord.Type.ToString());
+							doc.AppendNode(termNode, "time", termRecord.Time.ToString());
+							doc.AppendNode(termNode, "value", termRecord.Value);
+							doc.AppendNode(termNode, "reason", termRecord.Reason);
+						}
+					}
+
 				}
 
 				XmlNode playersNode = doc.CreateElement("players");
@@ -1657,7 +1757,11 @@ namespace Torn
 					doc.AppendNode(playerNode, "qrcode", player.QRCode);
 					doc.AppendNode(playerNode, "grade", player.Grade);
 					doc.AppendNode(playerNode, "pack", player.Pack);
-					doc.AppendNonZero(playerNode, "score", ZeroElimed && player.IsEliminated && player.Score > 0 ? 0 : player.Score);
+					doc.AppendNode(playerNode, "score", (int)(ZeroElimed && player.IsEliminated && player.Score > 0 ? 0 : player.Score));
+					if (ZeroElimed && player.IsEliminated)
+					{
+						doc.AppendNode(playerNode, "zeroedScore", (int)player.ZeroedScore);
+					}
 					doc.AppendNode(playerNode, "rank", (int)player.Rank);
 					doc.AppendNonZero(playerNode, "hitsby", player.HitsBy);
 					doc.AppendNonZero(playerNode, "hitson", player.HitsOn);
@@ -1940,6 +2044,15 @@ namespace Torn
 
 				score += gameTeam.Adjustment;
 
+				if (gameTeam?.TermRecords != null)
+				{
+					foreach (TermRecord term in gameTeam?.TermRecords)
+					{
+						score += term.Value;
+					}
+				}
+
+
 				LeagueTeam leagueTeam = LeagueTeam(gameTeam);
 				return leagueTeam != null && leagueTeam.Handicap != null ? new Handicap(leagueTeam.Handicap.Value, HandicapStyle).Apply(score) : score;
 			}			
@@ -1990,6 +2103,14 @@ namespace Torn
 			foreach (var player in gameTeam.Players)
 				score += (ZeroElimed && (player?.IsEliminated ?? false) && player.Score > 0) ? 0 : player.Score;
 
+			if (gameTeam?.TermRecords != null)
+			{
+				foreach (TermRecord term in gameTeam?.TermRecords)
+				{
+					score += term.Value;
+				}
+			}
+
 			int cap = CalulateTeamCap(gameTeam);
 
 			return new Handicap(cap, HandicapStyle.Percent).Apply(score);
@@ -2021,22 +2142,29 @@ namespace Torn
 
 				bool hasSwept = nonElimedTeams.Count() == 1 && nonElimedTeams[0].TeamId == gameTeam.TeamId;
 
+				Console.WriteLine("Tie Break " + ZeroedTieBreak);
+
 				if (HitsTieBreak)
                 {
 					relevantTeams = relevantTeams.OrderBy(x => -x.Score).ThenBy(x => -x.GetHitsBy()).ToList();
+				} else if (ZeroedTieBreak)
+                {
+					relevantTeams = relevantTeams.OrderBy(x => -x.Score).ThenBy(x => -x.GetZeroedScore()).ToList();
 				}
-				
-				var ties = relevantTeams.Where(t => (t.Score == gameTeam.Score) && ((HitsTieBreak && t.GetHitsBy() == gameTeam.GetHitsBy()) || !HitsTieBreak));  // If there are ties, this list will contain the tied teams. If not, it will contain just this team.
+				var ties = relevantTeams.Where(t => (t.Score == gameTeam.Score) && ((HitsTieBreak && t.GetHitsBy() == gameTeam.GetHitsBy()) || !HitsTieBreak) && ((ZeroedTieBreak && t.GetZeroedScore() == gameTeam.GetZeroedScore()) || !ZeroedTieBreak));  // If there are ties, this list will contain the tied teams. If not, it will contain just this team.
 
-				if(ties.Count() == 0) { return 0; }
+				if (ties.Count() == 0) { return 0; }
 
 				double totalPoints = 0;
 				foreach (var team in ties)
 				{
 					int index = relevantTeams.IndexOf(team);
 
+					bool isSwept = !nonElimedTeams.Contains(team);
+					bool halfPoints = isSwept && HalfVps;
+
 					if (victoryPoints.Valid(index))
-						totalPoints += victoryPoints[index];
+						totalPoints += Math.Floor(halfPoints ? victoryPoints[index] / 2: victoryPoints[index]);
 				}
 				return totalPoints / ties.Count() + gameTeam.PointsAdjustment + (hasSwept ? SweepBonus : 0);  // If there are ties, average the victory points for all teams involved in the tie.
 			}
